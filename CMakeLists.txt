@@ -26,6 +26,11 @@ option(BUILD_REGRESS "Build regression tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_DOC "Build documentation" ON)
 
+
+# Allow users to specify location of zlib.
+# Useful if zlib is being built alongside this as a sub-project.
+option(BUILD_LIBZIP_BUILD_ZLIB "Custom zlib Location, else find_package is used" OFF)
+
 include(CheckFunctionExists)
 include(CheckIncludeFiles)
 include(CheckLibraryExists)
@@ -190,13 +195,12 @@ int main(int argc, char *argv[]) { }" HAVE_NULLABLE)
 
 test_big_endian(WORDS_BIGENDIAN)
 
-# Allow users to specify location of zlib.
-# Useful if zlib is being built alongside this as a sub-project.
-option(LIBZIP_BUILD_ZLIB "Custom zlib Location, else find_package is used" OFF)
 
-if(NOT LIBZIP_BUILD_ZLIB)
+if(NOT LIBZIP_BUILD_ZLIB AND NOT TARGET zlibstatic)
   find_package(ZLIB 1.1.2 REQUIRED)
   include_directories(${ZLIB_INCLUDE_DIRS})
+else()
+  message(STATUS "use existing zlib")
 endif()
 
 # so developers on systems where zlib is named differently (Windows, sometimes)
@@ -490,15 +494,26 @@ install(FILES
 
 if(LIBZIP_DO_INSTALL)
   # Add targets to the build-tree export set
-  export(TARGETS zip
-    FILE "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-targets.cmake")
+#  export(TARGETS zip
+#    FILE "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-targets.cmake")
+
+  install(TARGETS zip
+          EXPORT zip-export
+          RUNTIME DESTINATION bin
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          FRAMEWORK DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+  install(EXPORT zip-export
+          DESTINATION lib/libpng
+          FILE lib${PNG_LIB_NAME}.cmake)
 
   # installation
-  install(FILES ${PROJECT_BINARY_DIR}/zipconf.h DESTINATION include)
-  install(FILES ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
-    )
-  install(EXPORT ${PROJECT_NAME}-targets NAMESPACE libzip:: FILE ${PROJECT_NAME}-targets.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
-    )
+#  install(FILES ${PROJECT_BINARY_DIR}/zipconf.h DESTINATION include)
+#  install(FILES ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake
+#    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+#    )
+#  install(EXPORT ${PROJECT_NAME}-targets NAMESPACE libzip:: FILE ${PROJECT_NAME}-targets.cmake
+#    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+#    )
 endif()
