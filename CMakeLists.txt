@@ -190,7 +190,15 @@ int main(int argc, char *argv[]) { }" HAVE_NULLABLE)
 
 test_big_endian(WORDS_BIGENDIAN)
 
-find_package(ZLIB 1.1.2 REQUIRED)
+# Allow users to specify location of zlib.
+# Useful if zlib is being built alongside this as a sub-project.
+option(LIBZIP_BUILD_ZLIB "Custom zlib Location, else find_package is used" OFF)
+
+if(NOT LIBZIP_BUILD_ZLIB)
+  find_package(ZLIB 1.1.2 REQUIRED)
+  include_directories(${ZLIB_INCLUDE_DIRS})
+endif()
+
 # so developers on systems where zlib is named differently (Windows, sometimes)
 # can override the name used in the pkg-config file
 if (NOT ZLIB_LINK_LIBRARY_NAME)
