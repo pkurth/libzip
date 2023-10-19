@@ -74,6 +74,7 @@ struct zip_source_file_context {
 struct zip_source_file_operations {
     void (*close)(zip_source_file_context_t *ctx);
     zip_int64_t (*commit_write)(zip_source_file_context_t *ctx);
+    zip_int64_t (*create_output)(zip_source_file_context_t *ctx);
     zip_int64_t (*create_temp_output)(zip_source_file_context_t *ctx);
     zip_int64_t (*create_temp_output_cloning)(zip_source_file_context_t *ctx, zip_uint64_t len);
     bool (*open)(zip_source_file_context_t *ctx);

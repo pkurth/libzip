@@ -34,6 +34,7 @@
 #include "zip_source_file_win32.h"
 
 static zip_int64_t _zip_win32_named_op_commit_write(zip_source_file_context_t *ctx);
+static zip_int64_t _zip_win32_named_op_create_output(zip_source_file_context_t *ctx);
 static zip_int64_t _zip_win32_named_op_create_temp_output(zip_source_file_context_t *ctx);
 static bool _zip_win32_named_op_open(zip_source_file_context_t *ctx);
 static zip_int64_t _zip_win32_named_op_remove(zip_source_file_context_t *ctx);
@@ -48,6 +49,7 @@ static HANDLE win32_named_open(zip_source_file_context_t *ctx, const char *name,
 zip_source_file_operations_t _zip_source_file_win32_named_ops = {
     _zip_win32_op_close,
     _zip_win32_named_op_commit_write,
+    _zip_win32_named_op_create_output,
     _zip_win32_named_op_create_temp_output,
     NULL,
     _zip_win32_named_op_open,
@@ -89,6 +91,52 @@ _zip_win32_named_op_commit_write(zip_source_file_context_t *ctx) {
         zip_error_set(&ctx->error, ZIP_ER_RENAME, _zip_win32_error_to_errno(GetLastError()));
         return -1;
     }
+
+    return 0;
+}
+
+static zip_int64_t 
+_zip_win32_named_op_create_output(zip_source_file_context_t* ctx) {
+    zip_win32_file_operations_t *file_ops = (zip_win32_file_operations_t *)ctx->ops_userdata;
+
+    HANDLE th = INVALID_HANDLE_VALUE;
+    PSECURITY_DESCRIPTOR psd = NULL;
+    PSECURITY_ATTRIBUTES psa = NULL;
+    SECURITY_ATTRIBUTES sa;
+    SECURITY_INFORMATION si;
+    DWORD success;
+    PACL dacl = NULL;
+    char *tempname = NULL;
+    size_t tempname_size = 0;
+
+    if ((HANDLE)ctx->f != INVALID_HANDLE_VALUE && GetFileType((HANDLE)ctx->f) == FILE_TYPE_DISK) {
+        si = DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
+        success = GetSecurityInfo((HANDLE)ctx->f, SE_FILE_OBJECT, si, NULL, NULL, &dacl, NULL, &psd);
+        if (success == ERROR_SUCCESS) {
+            sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+            sa.bInheritHandle = FALSE;
+            sa.lpSecurityDescriptor = psd;
+            psa = &sa;
+        }
+    }
+
+    if ((tempname = ctx->ops->string_duplicate(ctx, ctx->fname)) == NULL) {
+        zip_error_set(&ctx->error, ZIP_ER_MEMORY, 0);
+        return -1;
+    }
+
+    th = win32_named_open(ctx, tempname, true, psa);
+
+    if (th == INVALID_HANDLE_VALUE) {
+        free(tempname);
+        LocalFree(psd);
+        zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, _zip_win32_error_to_errno(GetLastError()));
+        return -1;
+    }
+
+    LocalFree(psd);
+    ctx->fout = th;
+    ctx->tmpname = tempname;
 
     return 0;
 }

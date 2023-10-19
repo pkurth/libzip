@@ -228,7 +228,8 @@ read_file(void *state, void *data, zip_uint64_t len, zip_source_cmd_t cmd) {
             zip_error_set(&ctx->error, ZIP_ER_INTERNAL, 0);
             return -1;
         }
-        return ctx->ops->create_temp_output(ctx);
+        //return ctx->ops->create_temp_output(ctx);
+        return ctx->ops->create_output(ctx);
 
     case ZIP_SOURCE_BEGIN_WRITE_CLONING:
         /* write support should not be set if fname is NULL */

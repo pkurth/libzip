@@ -45,6 +45,7 @@ static zip_source_file_operations_t ops_win32_read = {
     NULL,
     NULL,
     NULL,
+    NULL,
     _zip_win32_op_read,
     NULL,
     NULL,

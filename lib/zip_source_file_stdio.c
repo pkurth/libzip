@@ -54,6 +54,7 @@ static zip_source_file_operations_t ops_stdio_read = {
     NULL,
     NULL,
     NULL,
+    NULL,
     _zip_stdio_op_read,
     NULL,
     NULL,
