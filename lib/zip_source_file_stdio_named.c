@@ -43,6 +43,8 @@
 #include <unistd.h>
 #endif
 
+#undef HAVE_CLONEFILE
+
 #ifdef HAVE_CLONEFILE
 #include <sys/attr.h>
 #include <sys/clonefile.h>
@@ -53,6 +55,8 @@
 #include <sys/ioctl.h>
 #define CAN_CLONE
 #endif
+
+#undef CAN_CLONE
 
 static int create_file(zip_source_file_context_t *ctx, bool create_file);
 static int create_temp_file(zip_source_file_context_t *ctx, bool create_file);
