@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5.0)
+cmake_minimum_required(VERSION 3.10)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 if (${CMAKE_VERSION} VERSION_LESS "3.17.0")
@@ -6,8 +6,12 @@ if (${CMAKE_VERSION} VERSION_LESS "3.17.0")
 endif()
 
 project(libzip
-  VERSION 1.10.1
+  VERSION 1.11.4
   LANGUAGES C)
+
+if(NOT libzip_VERSION_PATCH)
+  set(libzip_VERSION_PATCH 0)
+endif()
 
 option(ENABLE_COMMONCRYPTO "Enable use of CommonCrypto" ON)
 option(ENABLE_GNUTLS "Enable use of GnuTLS" ON)
@@ -23,6 +27,7 @@ option(ENABLE_FDOPEN "Enable zip_fdopen, which is not allowed in Microsoft CRT s
 
 option(BUILD_TOOLS "Build tools in the src directory (zipcmp, zipmerge, ziptool)" ON)
 option(BUILD_REGRESS "Build regression tests" ON)
+option(BUILD_OSSFUZZ "Build fuzzers for ossfuzz" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_DOC "Build documentation" ON)
 
@@ -101,7 +106,10 @@ check_function_exists(_close HAVE__CLOSE)
 check_function_exists(_dup HAVE__DUP)
 check_function_exists(_fdopen HAVE__FDOPEN)
 check_function_exists(_fileno HAVE__FILENO)
+check_function_exists(_fseeki64 HAVE__FSEEKI64)
+check_function_exists(_fstat64 HAVE__FSTAT64)
 check_function_exists(_setmode HAVE__SETMODE)
+check_function_exists(_stat64 HAVE__STAT64)
 check_symbol_exists(_snprintf stdio.h HAVE__SNPRINTF)
 check_symbol_exists(_snprintf_s stdio.h HAVE__SNPRINTF_S)
 check_symbol_exists(_snwprintf_s stdio.h HAVE__SNWPRINTF_S)
@@ -119,6 +127,7 @@ check_function_exists(fileno HAVE_FILENO)
 check_function_exists(fseeko HAVE_FSEEKO)
 check_function_exists(ftello HAVE_FTELLO)
 check_function_exists(getprogname HAVE_GETPROGNAME)
+check_function_exists(GetSecurityInfo HAVE_GETSECURITYINFO)
 check_symbol_exists(localtime_r time.h HAVE_LOCALTIME_R)
 check_symbol_exists(localtime_s time.h HAVE_LOCALTIME_S)
 check_function_exists(memcpy_s HAVE_MEMCPY_S)
@@ -189,10 +198,6 @@ check_c_source_compiles("#include <sys/ioctl.h>
 #include <linux/fs.h>
 int main(int argc, char *argv[]) { unsigned long x = FICLONERANGE; }" HAVE_FICLONERANGE)
 
-check_c_source_compiles("
-int foo(char * _Nullable bar);
-int main(int argc, char *argv[]) { }" HAVE_NULLABLE)
-
 test_big_endian(WORDS_BIGENDIAN)
 
 
@@ -256,10 +261,11 @@ if(ENABLE_ZSTD)
     set(zstd_TARGET libzstd_static)
     message(STATUS "Use existing zstd")
     else()
-  find_package(zstd 1.3.6)
+  #find_package(zstd 1.3.6)
+  find_package(zstd 1.4.0)
   if(zstd_FOUND)
     set(HAVE_LIBZSTD 1)
-    if(TARGET zstd::libzstd_shared)
+    if(TARGET zstd::libzstd_shared AND BUILD_SHARED_LIBS)
       set(zstd_TARGET zstd::libzstd_shared)
     else()
       set(zstd_TARGET zstd::libzstd_static)
@@ -339,6 +345,10 @@ endif()
 
 if(BUILD_REGRESS)
   add_subdirectory(regress)
+endif()
+
+if(BUILD_OSSFUZZ)
+  add_subdirectory(ossfuzz)
 endif()
 
 if(BUILD_EXAMPLES)
@@ -464,16 +474,9 @@ elseif(LONG_LONG_LIBZIP EQUAL 8)
   set(ZIP_UINT64_T "unsigned long long")
 endif()
 
-if(HAVE_NULLABLE)
-  set(ZIP_NULLABLE_DEFINES)
-else()
-  set(ZIP_NULLABLE_DEFINES "#define _Nullable
-#define _Nonnull")
-endif()
-
 # write out config file
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake-config.h.in ${PROJECT_BINARY_DIR}/config.h)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake-zipconf.h.in ${PROJECT_BINARY_DIR}/zipconf.h)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/zipconf.h.in ${PROJECT_BINARY_DIR}/zipconf.h)
 
 # for tests
 
@@ -486,19 +489,19 @@ include(CMakePackageConfigHelpers)
 write_basic_package_version_file("${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake"
   COMPATIBILITY AnyNewerVersion)
 
-configure_package_config_file("${PROJECT_NAME}-config.cmake.in" "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake"
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libzip)
+if(LIBZIP_DO_INSTALL)
+  configure_package_config_file("${PROJECT_NAME}-config.cmake.in" "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libzip)
 
-# Install Find* modules, they are required by libzip-config.cmake to resolve dependencies
-install(FILES
+  # Install Find* modules, they are required by libzip-config.cmake to resolve dependencies
+  install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindNettle.cmake
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findzstd.cmake
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindMbedTLS.cmake
-  DESTINATION
+    DESTINATION
     ${CMAKE_INSTALL_LIBDIR}/cmake/libzip/modules
-  )  
+  )
 
-if(LIBZIP_DO_INSTALL)
   # Add targets to the build-tree export set
 #  export(TARGETS zip
 #    FILE "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-targets.cmake")
@@ -515,11 +518,16 @@ if(LIBZIP_DO_INSTALL)
           FILE lib${PNG_LIB_NAME}.cmake)
 
   # installation
-#  install(FILES ${PROJECT_BINARY_DIR}/zipconf.h DESTINATION include)
-#  install(FILES ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake
-#    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
-#    )
-#  install(EXPORT ${PROJECT_NAME}-targets NAMESPACE libzip:: FILE ${PROJECT_NAME}-targets.cmake
-#    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
-#    )
+  #install(FILES ${PROJECT_BINARY_DIR}/zipconf.h DESTINATION include)
+  #install(FILES ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config.cmake ${PROJECT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake
+  #  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+  #  )
+  #install(EXPORT ${PROJECT_NAME}-targets NAMESPACE libzip:: FILE ${PROJECT_NAME}-targets.cmake
+  #  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+  #  )
+  #if(BUILD_TOOLS)
+  #  install(EXPORT ${PROJECT_NAME}-bin-targets NAMESPACE libzip:: FILE ${PROJECT_NAME}-bin-targets.cmake
+  #        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+  #  )
+  #endif()
 endif()
