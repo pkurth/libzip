@@ -34,6 +34,7 @@
 #include "zip_source_file_win32.h"
 
 static zip_int64_t _zip_win32_named_op_commit_write(zip_source_file_context_t *ctx);
+static zip_int64_t _zip_win32_named_op_create_cloning(zip_source_file_context_t *ctx, zip_uint64_t offset);
 static zip_int64_t _zip_win32_named_op_create_output(zip_source_file_context_t *ctx);
 static zip_int64_t _zip_win32_named_op_create_temp_output(zip_source_file_context_t *ctx);
 static bool _zip_win32_named_op_open(zip_source_file_context_t *ctx);
@@ -51,7 +52,7 @@ zip_source_file_operations_t _zip_source_file_win32_named_ops = {
     _zip_win32_named_op_commit_write,
     _zip_win32_named_op_create_output,
     _zip_win32_named_op_create_temp_output,
-    NULL,
+    _zip_win32_named_op_create_cloning,
     _zip_win32_named_op_open,
     _zip_win32_op_read,
     _zip_win32_named_op_remove,
@@ -67,26 +68,29 @@ zip_source_file_operations_t _zip_source_file_win32_named_ops = {
 static zip_int64_t
 _zip_win32_named_op_commit_write(zip_source_file_context_t *ctx) {
     zip_win32_file_operations_t *file_ops = (zip_win32_file_operations_t *)ctx->ops_userdata;
-    DWORD attributes;
 
-    if (!CloseHandle((HANDLE)ctx->fout)) {
-        zip_error_set(&ctx->error, ZIP_ER_WRITE, _zip_win32_error_to_errno(GetLastError()));
-        return -1;
-    }
+    if (ctx->fout != INVALID_HANDLE_VALUE && ctx->fout != NULL) {
+        /* Truncate file at current write position to remove leftover trailing bytes */
+        SetEndOfFile((HANDLE)ctx->fout);
 
-    attributes = file_ops->get_file_attributes(ctx->tmpname);
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        zip_error_set(&ctx->error, ZIP_ER_RENAME, _zip_win32_error_to_errno(GetLastError()));
-        return -1;
-    }
-
-    if (attributes & FILE_ATTRIBUTE_TEMPORARY) {
-        if (!file_ops->set_file_attributes(ctx->tmpname, attributes & ~FILE_ATTRIBUTE_TEMPORARY)) {
-            zip_error_set(&ctx->error, ZIP_ER_RENAME, _zip_win32_error_to_errno(GetLastError()));
+        if (!CloseHandle((HANDLE)ctx->fout)) {
+            zip_error_set(&ctx->error, ZIP_ER_WRITE, _zip_win32_error_to_errno(GetLastError()));
             return -1;
+        }
+        ctx->fout = NULL;
+    }
+
+    /* In-place write complete: no file rename needed if tmpname equals fname */
+    if (ctx->tmpname != NULL) {
+        bool is_same_file = (ctx->tmpname == ctx->fname) || (wcscmp((const wchar_t *)ctx->tmpname, (const wchar_t *)ctx->fname) == 0);
+        if (is_same_file) {
+            free(ctx->tmpname);
+            ctx->tmpname = NULL;
+            return 0;
         }
     }
 
+    /* Fallback for temporary file rename */
     if (!file_ops->move_file(ctx->tmpname, ctx->fname, MOVEFILE_REPLACE_EXISTING)) {
         zip_error_set(&ctx->error, ZIP_ER_RENAME, _zip_win32_error_to_errno(GetLastError()));
         return -1;
@@ -95,46 +99,66 @@ _zip_win32_named_op_commit_write(zip_source_file_context_t *ctx) {
     return 0;
 }
 
-static zip_int64_t 
-_zip_win32_named_op_create_output(zip_source_file_context_t* ctx) {
+static zip_int64_t
+_zip_win32_named_op_create_cloning(zip_source_file_context_t *ctx, zip_uint64_t offset) {
     zip_win32_file_operations_t *file_ops = (zip_win32_file_operations_t *)ctx->ops_userdata;
-
     HANDLE th = INVALID_HANDLE_VALUE;
-    PSECURITY_DESCRIPTOR psd = NULL;
-    PSECURITY_ATTRIBUTES psa = NULL;
-    SECURITY_ATTRIBUTES sa;
-    SECURITY_INFORMATION si;
-    DWORD success;
-    PACL dacl = NULL;
+    LARGE_INTEGER li;
     char *tempname = NULL;
-    size_t tempname_size = 0;
-
-    if ((HANDLE)ctx->f != INVALID_HANDLE_VALUE && GetFileType((HANDLE)ctx->f) == FILE_TYPE_DISK) {
-        si = DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
-        success = GetSecurityInfo((HANDLE)ctx->f, SE_FILE_OBJECT, si, NULL, NULL, &dacl, NULL, &psd);
-        if (success == ERROR_SUCCESS) {
-            sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-            sa.bInheritHandle = FALSE;
-            sa.lpSecurityDescriptor = psd;
-            psa = &sa;
-        }
-    }
 
     if ((tempname = ctx->ops->string_duplicate(ctx, ctx->fname)) == NULL) {
         zip_error_set(&ctx->error, ZIP_ER_MEMORY, 0);
         return -1;
     }
 
-    th = win32_named_open(ctx, tempname, true, psa);
+    /* Open existing archive in-place for writing */
+    th = file_ops->create_file(tempname, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     if (th == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
         free(tempname);
-        LocalFree(psd);
-        zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, _zip_win32_error_to_errno(GetLastError()));
+        zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, _zip_win32_error_to_errno(err));
         return -1;
     }
 
-    LocalFree(psd);
+    /* Seek to the calculated unchanged_offset */
+    li.QuadPart = (LONGLONG)offset;
+    if (!SetFilePointerEx(th, li, NULL, FILE_BEGIN)) {
+        DWORD err = GetLastError();
+        CloseHandle(th);
+        free(tempname);
+        zip_error_set(&ctx->error, ZIP_ER_SEEK, _zip_win32_error_to_errno(err));
+        return -1;
+    }
+
+    ctx->fout = th;
+    ctx->tmpname = tempname;
+
+    return 0;
+}
+
+static zip_int64_t
+_zip_win32_named_op_create_output(zip_source_file_context_t *ctx) {
+    zip_win32_file_operations_t *file_ops = (zip_win32_file_operations_t *)ctx->ops_userdata;
+    HANDLE th = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER li;
+    char *tempname = NULL;
+
+    if ((tempname = ctx->ops->string_duplicate(ctx, ctx->fname)) == NULL) {
+        zip_error_set(&ctx->error, ZIP_ER_MEMORY, 0);
+        return -1;
+    }
+
+    /* Open existing archive in-place for writing */
+    th = file_ops->create_file(tempname, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (th == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        free(tempname);
+        zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, _zip_win32_error_to_errno(err));
+        return -1;
+    }
+
     ctx->fout = th;
     ctx->tmpname = tempname;
 
@@ -202,9 +226,12 @@ _zip_win32_named_op_create_temp_output(zip_source_file_context_t *ctx) {
 
 static bool
 _zip_win32_named_op_open(zip_source_file_context_t *ctx) {
-    HANDLE h = win32_named_open(ctx, ctx->fname, false, NULL);
+    zip_win32_file_operations_t *file_ops = (zip_win32_file_operations_t *)ctx->ops_userdata;
+
+    HANDLE h = file_ops->create_file(ctx->fname, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
+        zip_error_set(&ctx->error, ZIP_ER_OPEN, _zip_win32_error_to_errno(GetLastError()));
         return false;
     }
 
@@ -232,8 +259,18 @@ _zip_win32_named_op_rollback_write(zip_source_file_context_t *ctx) {
 
     if (ctx->fout) {
         CloseHandle((HANDLE)ctx->fout);
+        ctx->fout = NULL;
     }
-    file_ops->delete_file(ctx->tmpname);
+
+    if (ctx->tmpname != NULL) {
+        bool is_same_file = (ctx->tmpname == ctx->fname) || (wcscmp((const wchar_t *)ctx->tmpname, (const wchar_t *)ctx->fname) == 0);
+
+        if (!is_same_file) {
+            file_ops->delete_file(ctx->tmpname);
+        }
+        free(ctx->tmpname);
+        ctx->tmpname = NULL;
+    }
 }
 
 
@@ -261,7 +298,7 @@ _zip_win32_named_op_stat(zip_source_file_context_t *ctx, zip_source_file_stat_t 
             if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                 WIN32_FIND_DATA find_data;
                 /* Deduplication on Windows replaces files with reparse points;
-		 * accept them as regular files. */
+                 * accept them as regular files. */
                 if (file_ops->find_first_file(ctx->fname, &find_data) != INVALID_HANDLE_VALUE) {
                     st->regular_file = (find_data.dwReserved0 == IO_REPARSE_TAG_DEDUP);
                 }
